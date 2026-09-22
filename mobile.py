@@ -3,27 +3,27 @@ import glob
 import cv2
 import numpy as np
 import streamlit as st
-from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration
 
-st.set_page_config(page_title="AI Industrial QC Inspector", layout="wide")
+st.set_page_config(page_title="AI Fabric Defect Inspector", layout="wide")
 
-# Force Full-Screen Camera Styling for Mobile Viewport
+# CSS Styling to make Camera View and Images 100% Full Width on Mobile
 st.markdown(
     """
     <style>
     .main .block-container {
-        padding-left: 1rem !important;
-        padding-right: 1rem !important;
+        padding-left: 0.5rem !important;
+        padding-right: 0.5rem !important;
+        padding-top: 1rem !important;
     }
-    div[data-testid="stWebRtcStreamer"] {
+    div[data-testid="stCameraInput"] {
         width: 100% !important;
     }
-    div[data-testid="stWebRtcStreamer"] video {
+    div[data-testid="stCameraInput"] video {
         width: 100% !important;
-        height: 60vh !important;
-        object-fit: cover !important;
-        border-radius: 12px;
-        border: 2px solid #000;
+        border-radius: 10px;
+    }
+    img {
+        border-radius: 10px;
     }
     </style>
     """,
@@ -31,8 +31,9 @@ st.markdown(
 )
 
 st.title("🏭 Real-Time Fabric & Bag Defect Inspector")
+st.caption("Automated Pattern Inspection System")
 
-# GitHub / Cloud Deployment Path
+# Dynamic Folder Path for GitHub Repo
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MASTER_FOLDER = os.path.join(BASE_DIR, "MASTER")
 
@@ -59,51 +60,33 @@ def load_master_database(folder_path):
 
 master_dict = load_master_database(MASTER_FOLDER)
 
-st.sidebar.header("⚙️ QC Sensitivity Settings")
-defect_sensitivity = st.sidebar.slider("Color Defect Sensitivity", 10, 100, 45)
-min_defect_area = st.sidebar.slider("Min Defect Size (Pixels)", 30, 1500, 100)
+# Sidebar Settings
+st.sidebar.header("⚙️ QC Inspection Controls")
+sensitivity = st.sidebar.slider("Color Defect Sensitivity", 10, 100, 40)
+min_defect_area = st.sidebar.slider("Min Defect Area (Pixels)", 20, 1000, 80)
 
-def match_master_style(test_bgr, master_db):
+def match_and_inspect(test_bgr, master_db, sens, min_area):
     if not master_db:
-        return None, 0
-    sift = cv2.SIFT_create(nfeatures=500)
-    gray_test = cv2.cvtColor(test_bgr, cv2.COLOR_BGR2GRAY)
-    kp_test, des_test = sift.detectAndCompute(gray_test, None)
+        return None, -1, "No Master Image found in 'MASTER' folder."
 
-    if des_test is None or len(kp_test) < 10:
-        return None, 0
-
-    bf = cv2.BFMatcher(cv2.NORM_L2, crossCheck=True)
-    best_score = 0
-    best_master = None
-
-    for name, m_img in master_db.items():
-        gray_m = cv2.cvtColor(m_img, cv2.COLOR_BGR2GRAY)
-        kp_m, des_m = sift.detectAndCompute(gray_m, None)
-
-        if des_m is not None:
-            matches = bf.match(des_m, des_test)
-            score = len(matches)
-            if score > best_score:
-                best_score = score
-                best_master = m_img
-
-    return best_master, best_score
-
-def inspect_defects(master_bgr, test_bgr, sensitivity, min_area):
+    # Pick first master template image
+    master_name, master_bgr = list(master_db.items())[0]
+    
     h_m, w_m = master_bgr.shape[:2]
     test_resized = cv2.resize(test_bgr, (w_m, h_m))
 
+    # Convert to LAB Color space for defect comparison
     master_lab = cv2.cvtColor(master_bgr, cv2.COLOR_BGR2LAB).astype(np.float32)
     test_lab = cv2.cvtColor(test_resized, cv2.COLOR_BGR2LAB).astype(np.float32)
 
+    # Color difference calculation
     da = master_lab[:, :, 1] - test_lab[:, :, 1]
     db = master_lab[:, :, 2] - test_lab[:, :, 2]
     color_diff = np.sqrt(da**2 + db**2)
     color_diff = np.clip(color_diff, 0, 255).astype(np.uint8)
 
-    blurred_diff = cv2.GaussianBlur(color_diff, (7, 7), 0)
-    _, thresh = cv2.threshold(blurred_diff, sensitivity, 255, cv2.THRESH_BINARY)
+    blurred_diff = cv2.GaussianBlur(color_diff, (5, 5), 0)
+    _, thresh = cv2.threshold(blurred_diff, sens, 255, cv2.THRESH_BINARY)
 
     contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
@@ -112,87 +95,78 @@ def inspect_defects(master_bgr, test_bgr, sensitivity, min_area):
 
     for contour in contours:
         area = cv2.contourArea(contour)
-        if min_area <= area <= (w_m * h_m * 0.3):
+        if min_area <= area <= (w_m * h_m * 0.35):
             x, y, bw, bh = cv2.boundingRect(contour)
-            # Drawing Bounding Box around Defect
-            cv2.rectangle(output_img, (x, y), (x + bw, y + bh), (0, 0, 255), 4)
-            cv2.putText(output_img, "DEFECT", (x, max(y - 8, 20)),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+            cv2.rectangle(output_img, (x, y), (x + bw, y + bh), (0, 0, 255), 3)
+            cv2.putText(output_img, "DEFECT", (x, max(y - 5, 15)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
             defect_count += 1
 
-    return output_img, defect_count
+    return output_img, defect_count, "Success"
 
-class LiveQCProcessor(VideoProcessorBase):
-    def __init__(self):
-        self.sensitivity = 45
-        self.min_area = 100
-        self.master_db = master_dict
+# Tab interface for high stability on mobile
+tab1, tab2 = st.tabs(["📸 Mobile Snap & Scan (Stable)", "🎥 Live WebRTC Stream"])
 
-    def update_params(self, sensitivity, min_area, db):
-        self.sensitivity = sensitivity
-        self.min_area = min_area
-        self.master_db = db
+with tab1:
+    st.subheader("Mobile Quick Inspection")
+    camera_file = st.camera_input("Take Fabric Photo", key="mobile_camera")
 
-    def recv(self, frame):
-        img_bgr = frame.to_ndarray(format="bgr24")
+    if camera_file is not None:
+        bytes_data = camera_file.getvalue()
+        cv_img = cv2.imdecode(np.frombuffer(bytes_data, np.uint8), cv2.IMREAD_COLOR)
 
-        if not self.master_db:
-            # Display Header Banner on Video Frame
-            cv2.rectangle(img_bgr, (0, 0), (img_bgr.shape[1], 60), (0, 0, 0), -1)
-            cv2.putText(img_bgr, "ERROR: MASTER FOLDER IS EMPTY IN GITHUB", (15, 40),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
-            return frame.from_ndarray(img_bgr, format="bgr24")
+        output_img, defects, msg = match_and_inspect(cv_img, master_dict, sensitivity, min_defect_area)
 
-        matched_master, match_score = match_master_style(img_bgr, self.master_db)
-
-        # Background overlay for status text
-        cv2.rectangle(img_bgr, (0, 0), (img_bgr.shape[1], 60), (0, 0, 0), -1)
-
-        if matched_master is None or match_score < 10:
-            cv2.putText(img_bgr, "STATUS: SEARCHING / UNKNOWN STYLE", (15, 40),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 165, 255), 2)
-            return frame.from_ndarray(img_bgr, format="bgr24")
-
-        processed_img, defects = inspect_defects(matched_master, img_bgr, self.sensitivity, self.min_area)
-
-        cv2.rectangle(processed_img, (0, 0), (processed_img.shape[1], 60), (0, 0, 0), -1)
-
-        if defects == 0:
-            cv2.putText(processed_img, "STATUS: PASSED (NO DEFECT)", (15, 40),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+        if defects == -1:
+            st.error(f"❌ Error: {msg}")
+        elif defects == 0:
+            st.success("🟢 STATUS: PASSED (NO DEFECT FOUND)")
+            st.image(cv2.cvtColor(output_img, cv2.COLOR_BGR2RGB), use_column_width=True)
         else:
-            cv2.putText(processed_img, f"STATUS: REJECTED ({defects} DEFECTS FOUND)", (15, 40),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+            st.error(f"🔴 STATUS: REJECTED ({defects} DEFECT(S) DETECTED)")
+            st.image(cv2.cvtColor(output_img, cv2.COLOR_BGR2RGB), use_column_width=True)
 
-        return frame.from_ndarray(processed_img, format="bgr24")
+with tab2:
+    st.subheader("Live Stream Inspection")
+    
+    from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration
 
-RTC_CONFIGURATION = RTCConfiguration(
-    {
-        "iceServers": [
-            {"urls": ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"]},
-            {
-                "urls": "turn:openrelay.metered.ca:80",
-                "username": "openrelay",
-                "credential": "openrelay",
-            }
-        ]
-    }
-)
+    class SimpleQCProcessor(VideoProcessorBase):
+        def __init__(self):
+            self.master_db = master_dict
+            self.sens = sensitivity
+            self.min_area = min_defect_area
 
-ctx = webrtc_streamer(
-    key="industrial-qc-live",
-    video_processor_factory=LiveQCProcessor,
-    rtc_configuration=RTC_CONFIGURATION,
-    media_stream_constraints={
-        "video": {
-            "facingMode": "environment",
-            "width": {"ideal": 1280},
-            "height": {"ideal": 720}
-        },
-        "audio": False
-    },
-    async_processing=True
-)
+        def recv(self, frame):
+            img_bgr = frame.to_ndarray(format="bgr24")
+            
+            if not self.master_db:
+                cv2.putText(img_bgr, "NO MASTER IMAGE IN GITHUB REPO", (20, 40),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+                return frame.from_ndarray(img_bgr, format="bgr24")
 
-if ctx.video_processor:
-    ctx.video_processor.update_params(defect_sensitivity, min_defect_area, master_dict)
+            output_img, defects, _ = match_and_inspect(img_bgr, self.master_db, self.sens, self.min_area)
+            
+            # Header Status Overlay
+            cv2.rectangle(output_img, (0, 0), (output_img.shape[1], 50), (0, 0, 0), -1)
+            
+            if defects == 0:
+                cv2.putText(output_img, "STATUS: PASSED (NO DEFECT)", (15, 35),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+            else:
+                cv2.putText(output_img, f"STATUS: REJECTED ({defects} DEFECTS)", (15, 35),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+
+            return frame.from_ndarray(output_img, format="bgr24")
+
+    RTC_CONFIGURATION = RTCConfiguration(
+        {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
+    )
+
+    webrtc_streamer(
+        key="qc-live-stream",
+        video_processor_factory=SimpleQCProcessor,
+        rtc_configuration=RTC_CONFIGURATION,
+        media_stream_constraints={"video": {"facingMode": "environment"}, "audio": False},
+        async_processing=True
+    )
