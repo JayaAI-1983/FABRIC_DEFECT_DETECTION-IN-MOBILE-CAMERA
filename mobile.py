@@ -33,7 +33,7 @@ def load_master_database(folder_path):
 master_dict = load_master_database(MASTER_FOLDER)
 
 if not master_dict:
-    st.error(f"❌ Master images not found in `{MASTER_FOLDER}`. Please add approved `.jpg` files.")
+    st.error(f"❌ Master images not found in `{MASTER_FOLDER}`. Please add approved template images.")
     st.stop()
 
 st.sidebar.header("⚙️ QC Inspection Settings")
@@ -191,16 +191,41 @@ class LiveQCProcessor(VideoProcessorBase):
 
         return frame.from_ndarray(processed_img, format="bgr24")
 
-# Streamlit WebRTC Live Streamer with Mobile Rear Camera Support
+# STUN and TURN server configuration for seamless mobile cellular network connections
+RTC_CONFIGURATION = RTCConfiguration(
+    {
+        "iceServers": [
+            {"urls": ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"]},
+            {"urls": ["stun:stun2.l.google.com:19302", "stun:stun3.l.google.com:19302"]},
+            {
+                "urls": "turn:openrelay.metered.ca:80",
+                "username": "openrelay",
+                "credential": "openrelay",
+            },
+            {
+                "urls": "turn:openrelay.metered.ca:443",
+                "username": "openrelay",
+                "credential": "openrelay",
+            },
+            {
+                "urls": "turn:openrelay.metered.ca:443?transport=tcp",
+                "username": "openrelay",
+                "credential": "openrelay",
+            },
+        ]
+    }
+)
+
+# WebRTC Streamer Widget configured for Mobile Rear Camera and streaming limits
 ctx = webrtc_streamer(
     key="industrial-qc-live",
     video_processor_factory=LiveQCProcessor,
-    rtc_configuration=RTCConfiguration(
-        {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
-    ),
+    rtc_configuration=RTC_CONFIGURATION,
     media_stream_constraints={
         "video": {
-            "facingMode": "environment"  # Mobile-la direct-a Back Camera open aagum
+            "facingMode": "environment",  # Uses mobile rear camera automatically
+            "width": {"ideal": 640},
+            "height": {"ideal": 480}
         },
         "audio": False
     },
@@ -210,10 +235,10 @@ ctx = webrtc_streamer(
 if ctx.video_processor:
     ctx.video_processor.update_params(defect_sensitivity, min_defect_area)
 
-# Live Camera Status Display Under WebRTC Widget
+# Live Status Indicator Under Camera Stream
 st.markdown("---")
 if ctx.state.playing:
-    st.success("🟢 **Camera Active:** Mobile Back Camera live inspection nadandhu kittu irukku.")
-    st.info("ℹ️ Camera-va nirutha mela irukkura **'STOP'** button-a click pannunga.")
+    st.success("🟢 **Camera Active:** Mobile rear camera is currently streaming and inspecting in real-time.")
+    st.info("ℹ️ Click the **'STOP'** button above to pause the camera stream.")
 else:
-    st.warning("🔴 **Camera Inactive:** Mobile-la test panna mela irukkura **'START'** button-a press panni camera permission Allow pannunga.")
+    st.warning("🔴 **Camera Inactive:** Press the **'START'** button above and allow camera permissions to begin live inspection.")
