@@ -5,13 +5,37 @@ import numpy as np
 import streamlit as st
 from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration
 
-st.set_page_config(page_title="AI Industrial QC Inspector", layout="centered")
+st.set_page_config(page_title="AI Industrial QC Inspector", layout="wide")
+
+# CSS Fix to make WebRTC video container 100% full width on mobile devices
+st.markdown(
+    """
+    <style>
+    div[data-testid="stWebRtcStreamer"] {
+        width: 100% !important;
+    }
+    div[data-testid="stWebRtcStreamer"] video {
+        width: 100% !important;
+        height: auto !important;
+        max-height: 500px !important;
+        object-fit: contain !important;
+        border-radius: 10px;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
 
 st.title("🏭 Real-Time Fabric & Bag Defect Inspector")
 st.caption("SIFT Alignment + Multi-Defect Classifier (Stain, Density, Color Mismatch)")
 
-# Path Configuration
-MASTER_FOLDER = "MASTER"
+# Dynamic Master Folder path handling for both local and GitHub/Cloud deployment
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+MASTER_FOLDER = os.path.join(BASE_DIR, "MASTER")
+
+# Fallback to local Windows directory if folder doesn't exist relative to script
+if not os.path.exists(MASTER_FOLDER):
+    MASTER_FOLDER = "MASTER"
 
 @st.cache_resource
 def load_master_database(folder_path):
@@ -148,12 +172,11 @@ def inspect_defects(master_bgr, test_bgr, sensitivity, min_area):
 
             cv2.rectangle(output_img, (x, y), (x + bw, y + bh), (0, 0, 255), 3)
             cv2.putText(output_img, f"DEFECT: {defect_type}", (x, max(y - 5, 15)),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 255), 2)
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
             defect_count += 1
 
     return output_img, defect_count
 
-# Class processing definition
 class LiveQCProcessor(VideoProcessorBase):
     def __init__(self):
         self.sensitivity = 55
@@ -167,6 +190,12 @@ class LiveQCProcessor(VideoProcessorBase):
 
     def recv(self, frame):
         img_bgr = frame.to_ndarray(format="bgr24")
+
+        # Overlay text on live feed if no master images exist in DB
+        if not self.master_db:
+            cv2.putText(img_bgr, "ERROR: NO MASTER IMAGES IN FOLDER", (20, 50),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+            return frame.from_ndarray(img_bgr, format="bgr24")
 
         matched_master, match_score = match_master_style(img_bgr, self.master_db)
 
@@ -186,30 +215,33 @@ class LiveQCProcessor(VideoProcessorBase):
 
         return frame.from_ndarray(processed_img, format="bgr24")
 
-# Stream Mode Selection Menu
+# Stream Selection Mode
 mode = st.radio("📸 Inspection Mode Select Pannunga:", ["Mobile Snap & Scan (Recommended)", "Live WebRTC Stream"])
 
 if mode == "Mobile Snap & Scan (Recommended)":
-    st.info("💡 Mobile-la High Quality inspection panna, direct camera photo click pannunga.")
+    st.info("💡 High accuracy inspection-ukku photo click panni test pannunga.")
     camera_file = st.camera_input("Take Photo for QC Inspection")
 
     if camera_file is not None:
         bytes_data = camera_file.getvalue()
         cv_img = cv2.imdecode(np.frombuffer(bytes_data, np.uint8), cv2.IMREAD_COLOR)
 
-        matched_master, score = match_master_style(cv_img, master_dict)
-
-        if matched_master is None or score < 18:
-            st.error("❌ STATUS: REJECTED (Unknown / Unregistered Style)")
-            st.image(cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB), use_column_width=True)
+        if not master_dict:
+            st.error("❌ Master Database Empty! Please upload template images into the `MASTER` repository folder.")
         else:
-            processed_img, defects = inspect_defects(matched_master, cv_img, defect_sensitivity, min_defect_area)
-            st.image(cv2.cvtColor(processed_img, cv2.COLOR_BGR2RGB), use_column_width=True)
-            
-            if defects == 0:
-                st.success("🟢 STATUS: PASSED (NO DEFECT FOUND)")
+            matched_master, score = match_master_style(cv_img, master_dict)
+
+            if matched_master is None or score < 18:
+                st.error("❌ STATUS: REJECTED (Unknown / Unregistered Style)")
+                st.image(cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB), use_column_width=True)
             else:
-                st.error(f"🔴 STATUS: REJECTED ({defects} DEFECTS FOUND)")
+                processed_img, defects = inspect_defects(matched_master, cv_img, defect_sensitivity, min_defect_area)
+                st.image(cv2.cvtColor(processed_img, cv2.COLOR_BGR2RGB), use_column_width=True)
+                
+                if defects == 0:
+                    st.success("🟢 STATUS: PASSED (NO DEFECT FOUND)")
+                else:
+                    st.error(f"🔴 STATUS: REJECTED ({defects} DEFECTS FOUND)")
 
 else:
     RTC_CONFIGURATION = RTCConfiguration(
@@ -236,7 +268,7 @@ else:
         rtc_configuration=RTC_CONFIGURATION,
         media_stream_constraints={
             "video": {
-                "facingMode": {"exact": "environment"} if st.checkbox("Force Back Camera", True) else "user",
+                "facingMode": "environment",
                 "width": {"ideal": 1280},
                 "height": {"ideal": 720}
             },
