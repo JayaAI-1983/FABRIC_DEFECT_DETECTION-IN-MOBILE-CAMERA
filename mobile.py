@@ -7,21 +7,23 @@ from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfigurati
 
 st.set_page_config(page_title="AI Industrial QC Inspector", layout="wide")
 
-# CSS Fix: Mobile Screen-kku Camera View-a Full Width (Perisa) Aakkuvadharukku
+# Force Full-Screen Camera Styling for Mobile Viewport
 st.markdown(
     """
     <style>
+    .main .block-container {
+        padding-left: 1rem !important;
+        padding-right: 1rem !important;
+    }
     div[data-testid="stWebRtcStreamer"] {
         width: 100% !important;
-        display: flex;
-        justify-content: center;
     }
     div[data-testid="stWebRtcStreamer"] video {
         width: 100% !important;
-        height: auto !important;
-        min-height: 380px !important;
+        height: 60vh !important;
         object-fit: cover !important;
         border-radius: 12px;
+        border: 2px solid #000;
     }
     </style>
     """,
@@ -29,9 +31,8 @@ st.markdown(
 )
 
 st.title("🏭 Real-Time Fabric & Bag Defect Inspector")
-st.caption("SIFT Alignment + Multi-Defect Classifier")
 
-# GitHub / Cloud Deployment-kku Dynamic Master Folder Path Setup
+# GitHub / Cloud Deployment Path
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MASTER_FOLDER = os.path.join(BASE_DIR, "MASTER")
 
@@ -58,13 +59,9 @@ def load_master_database(folder_path):
 
 master_dict = load_master_database(MASTER_FOLDER)
 
-# Master Images Illai Endral Warning Message
-if not master_dict:
-    st.warning("⚠️ GitHub Repo-la 'MASTER' nu oru folder create panni, adhukulla approved Master Fabric Images-a upload pannunga!")
-
-st.sidebar.header("⚙️ QC Inspection Settings")
-defect_sensitivity = st.sidebar.slider("Color Defect Sensitivity", 10, 100, 55)
-min_defect_area = st.sidebar.slider("Min Defect Size (Pixels)", 30, 1500, 150)
+st.sidebar.header("⚙️ QC Sensitivity Settings")
+defect_sensitivity = st.sidebar.slider("Color Defect Sensitivity", 10, 100, 45)
+min_defect_area = st.sidebar.slider("Min Defect Size (Pixels)", 30, 1500, 100)
 
 def match_master_style(test_bgr, master_db):
     if not master_db:
@@ -115,17 +112,20 @@ def inspect_defects(master_bgr, test_bgr, sensitivity, min_area):
 
     for contour in contours:
         area = cv2.contourArea(contour)
-        if min_area <= area <= (w_m * h_m * 0.25):
+        if min_area <= area <= (w_m * h_m * 0.3):
             x, y, bw, bh = cv2.boundingRect(contour)
-            cv2.rectangle(output_img, (x, y), (x + bw, y + bh), (0, 0, 255), 3)
+            # Drawing Bounding Box around Defect
+            cv2.rectangle(output_img, (x, y), (x + bw, y + bh), (0, 0, 255), 4)
+            cv2.putText(output_img, "DEFECT", (x, max(y - 8, 20)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
             defect_count += 1
 
     return output_img, defect_count
 
 class LiveQCProcessor(VideoProcessorBase):
     def __init__(self):
-        self.sensitivity = 55
-        self.min_area = 150
+        self.sensitivity = 45
+        self.min_area = 100
         self.master_db = master_dict
 
     def update_params(self, sensitivity, min_area, db):
@@ -136,26 +136,32 @@ class LiveQCProcessor(VideoProcessorBase):
     def recv(self, frame):
         img_bgr = frame.to_ndarray(format="bgr24")
 
-        # Master Folder Khali-ya irundhal:
         if not self.master_db:
-            cv2.putText(img_bgr, "NO MASTER IMAGE IN GITHUB REPO", (20, 50),
+            # Display Header Banner on Video Frame
+            cv2.rectangle(img_bgr, (0, 0), (img_bgr.shape[1], 60), (0, 0, 0), -1)
+            cv2.putText(img_bgr, "ERROR: MASTER FOLDER IS EMPTY IN GITHUB", (15, 40),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
             return frame.from_ndarray(img_bgr, format="bgr24")
 
         matched_master, match_score = match_master_style(img_bgr, self.master_db)
 
-        if matched_master is None or match_score < 12:
-            cv2.putText(img_bgr, "STATUS: SEARCHING / UNKNOWN STYLE", (20, 50),
+        # Background overlay for status text
+        cv2.rectangle(img_bgr, (0, 0), (img_bgr.shape[1], 60), (0, 0, 0), -1)
+
+        if matched_master is None or match_score < 10:
+            cv2.putText(img_bgr, "STATUS: SEARCHING / UNKNOWN STYLE", (15, 40),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 165, 255), 2)
             return frame.from_ndarray(img_bgr, format="bgr24")
 
         processed_img, defects = inspect_defects(matched_master, img_bgr, self.sensitivity, self.min_area)
 
+        cv2.rectangle(processed_img, (0, 0), (processed_img.shape[1], 60), (0, 0, 0), -1)
+
         if defects == 0:
-            cv2.putText(processed_img, "STATUS: PASSED (NO DEFECT)", (20, 50),
+            cv2.putText(processed_img, "STATUS: PASSED (NO DEFECT)", (15, 40),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
         else:
-            cv2.putText(processed_img, f"STATUS: REJECTED ({defects} DEFECTS)", (20, 50),
+            cv2.putText(processed_img, f"STATUS: REJECTED ({defects} DEFECTS FOUND)", (15, 40),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
 
         return frame.from_ndarray(processed_img, format="bgr24")
