@@ -6,7 +6,7 @@ import streamlit as st
 
 st.set_page_config(page_title="AI Fabric Defect Inspector", layout="wide")
 
-# CSS Styling to make Camera View and Images 100% Full Width on Mobile
+# Mobile Friendly CSS Styling
 st.markdown(
     """
     <style>
@@ -31,18 +31,17 @@ st.markdown(
 )
 
 st.title("🏭 Real-Time Fabric & Bag Defect Inspector")
-st.caption("Automated Pattern Inspection System")
+st.caption("Automated Pattern & Defect Inspection System")
 
-# Dynamic Folder Path for GitHub Repo
+# GitHub Repository-la MASTER Folder Path setup
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MASTER_FOLDER = os.path.join(BASE_DIR, "MASTER")
 
 if not os.path.exists(MASTER_FOLDER):
     os.makedirs(MASTER_FOLDER, exist_ok=True)
 
-@st.cache_resource
-def load_master_database(folder_path):
-    master_dict = {}
+def load_master_images(folder_path):
+    master_images = []
     if os.path.exists(folder_path):
         all_files = glob.glob(os.path.join(folder_path, "*.[jJ][pP][gG]")) + \
                     glob.glob(os.path.join(folder_path, "*.[pP][nN][gG]")) + \
@@ -51,35 +50,48 @@ def load_master_database(folder_path):
         for fpath in all_files:
             img = cv2.imread(fpath)
             if img is not None:
-                h, w = img.shape[:2]
-                target_w = 640
-                target_h = int(h * (target_w / w))
-                resized_m = cv2.resize(img, (target_w, target_h))
-                master_dict[os.path.basename(fpath)] = resized_m
-    return master_dict
+                master_images.append(img)
+    return master_images
 
-master_dict = load_master_database(MASTER_FOLDER)
+master_list = load_master_images(MASTER_FOLDER)
 
 # Sidebar Settings
 st.sidebar.header("⚙️ QC Inspection Controls")
-sensitivity = st.sidebar.slider("Color Defect Sensitivity", 10, 100, 40)
+sensitivity = st.sidebar.slider("Color Defect Sensitivity", 10, 100, 35)
 min_defect_area = st.sidebar.slider("Min Defect Area (Pixels)", 20, 1000, 80)
 
-def match_and_inspect(test_bgr, master_db, sens, min_area):
-    if not master_db:
-        return None, -1, "No Master Image found in 'MASTER' folder."
+def match_and_inspect_best(test_bgr, master_imgs, sens, min_area):
+    if not master_imgs:
+        return None, -1, "MASTER folder-la GitHub Repo-la images illai!"
 
-    # Pick first master template image
-    master_name, master_bgr = list(master_db.items())[0]
-    
-    h_m, w_m = master_bgr.shape[:2]
+    # Find closest matching Master Image using SIFT
+    sift = cv2.SIFT_create(nfeatures=500)
+    gray_test = cv2.cvtColor(test_bgr, cv2.COLOR_BGR2GRAY)
+    kp_test, des_test = sift.detectAndCompute(gray_test, None)
+
+    best_master = master_imgs[0]
+    best_score = -1
+
+    if des_test is not None:
+        bf = cv2.BFMatcher(cv2.NORM_L2, crossCheck=True)
+        for m_img in master_imgs:
+            gray_m = cv2.cvtColor(m_img, cv2.COLOR_BGR2GRAY)
+            kp_m, des_m = sift.detectAndCompute(gray_m, None)
+            if des_m is not None:
+                matches = bf.match(des_m, des_test)
+                if len(matches) > best_score:
+                    best_score = len(matches)
+                    best_master = m_img
+
+    # Resize test image to matched master image dimensions
+    h_m, w_m = best_master.shape[:2]
     test_resized = cv2.resize(test_bgr, (w_m, h_m))
 
     # Convert to LAB Color space for defect comparison
-    master_lab = cv2.cvtColor(master_bgr, cv2.COLOR_BGR2LAB).astype(np.float32)
+    master_lab = cv2.cvtColor(best_master, cv2.COLOR_BGR2LAB).astype(np.float32)
     test_lab = cv2.cvtColor(test_resized, cv2.COLOR_BGR2LAB).astype(np.float32)
 
-    # Color difference calculation
+    # Calculate Delta Color Difference
     da = master_lab[:, :, 1] - test_lab[:, :, 1]
     db = master_lab[:, :, 2] - test_lab[:, :, 2]
     color_diff = np.sqrt(da**2 + db**2)
@@ -97,6 +109,7 @@ def match_and_inspect(test_bgr, master_db, sens, min_area):
         area = cv2.contourArea(contour)
         if min_area <= area <= (w_m * h_m * 0.35):
             x, y, bw, bh = cv2.boundingRect(contour)
+            # Red Bounding Box for Defects
             cv2.rectangle(output_img, (x, y), (x + bw, y + bh), (0, 0, 255), 3)
             cv2.putText(output_img, "DEFECT", (x, max(y - 5, 15)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
@@ -104,69 +117,45 @@ def match_and_inspect(test_bgr, master_db, sens, min_area):
 
     return output_img, defect_count, "Success"
 
-# Tab interface for high stability on mobile
-tab1, tab2 = st.tabs(["📸 Mobile Snap & Scan (Stable)", "🎥 Live WebRTC Stream"])
+# Tab View
+tab1, tab2 = st.tabs(["📸 Mobile Snap & Scan", "📁 Upload Image Inspection"])
 
 with tab1:
-    st.subheader("Mobile Quick Inspection")
+    st.subheader("Mobile Quick Camera Scan")
+    st.info("💡 Camera Permission 'Allow' pannunga. Photo click pannadhum Result theryum.")
+    
     camera_file = st.camera_input("Take Fabric Photo", key="mobile_camera")
 
     if camera_file is not None:
         bytes_data = camera_file.getvalue()
         cv_img = cv2.imdecode(np.frombuffer(bytes_data, np.uint8), cv2.IMREAD_COLOR)
 
-        output_img, defects, msg = match_and_inspect(cv_img, master_dict, sensitivity, min_defect_area)
+        output_img, defects, msg = match_and_inspect_best(cv_img, master_list, sensitivity, min_defect_area)
 
         if defects == -1:
             st.error(f"❌ Error: {msg}")
         elif defects == 0:
-            st.success("🟢 STATUS: PASSED (NO DEFECT FOUND)")
+            st.success("🟢 STATUS: PASSED (NO DEFECT DETECTED)")
             st.image(cv2.cvtColor(output_img, cv2.COLOR_BGR2RGB), use_column_width=True)
         else:
             st.error(f"🔴 STATUS: REJECTED ({defects} DEFECT(S) DETECTED)")
             st.image(cv2.cvtColor(output_img, cv2.COLOR_BGR2RGB), use_column_width=True)
 
 with tab2:
-    st.subheader("Live Stream Inspection")
-    
-    from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration
+    st.subheader("Upload Fabric Photo")
+    uploaded_file = st.file_uploader("Choose a fabric image", type=["jpg", "jpeg", "png"])
 
-    class SimpleQCProcessor(VideoProcessorBase):
-        def __init__(self):
-            self.master_db = master_dict
-            self.sens = sensitivity
-            self.min_area = min_defect_area
+    if uploaded_file is not None:
+        file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
+        cv_img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
 
-        def recv(self, frame):
-            img_bgr = frame.to_ndarray(format="bgr24")
-            
-            if not self.master_db:
-                cv2.putText(img_bgr, "NO MASTER IMAGE IN GITHUB REPO", (20, 40),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
-                return frame.from_ndarray(img_bgr, format="bgr24")
+        output_img, defects, msg = match_and_inspect_best(cv_img, master_list, sensitivity, min_defect_area)
 
-            output_img, defects, _ = match_and_inspect(img_bgr, self.master_db, self.sens, self.min_area)
-            
-            # Header Status Overlay
-            cv2.rectangle(output_img, (0, 0), (output_img.shape[1], 50), (0, 0, 0), -1)
-            
-            if defects == 0:
-                cv2.putText(output_img, "STATUS: PASSED (NO DEFECT)", (15, 35),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-            else:
-                cv2.putText(output_img, f"STATUS: REJECTED ({defects} DEFECTS)", (15, 35),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-
-            return frame.from_ndarray(output_img, format="bgr24")
-
-    RTC_CONFIGURATION = RTCConfiguration(
-        {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
-    )
-
-    webrtc_streamer(
-        key="qc-live-stream",
-        video_processor_factory=SimpleQCProcessor,
-        rtc_configuration=RTC_CONFIGURATION,
-        media_stream_constraints={"video": {"facingMode": "environment"}, "audio": False},
-        async_processing=True
-    )
+        if defects == -1:
+            st.error(f"❌ Error: {msg}")
+        elif defects == 0:
+            st.success("🟢 STATUS: PASSED (NO DEFECT DETECTED)")
+            st.image(cv2.cvtColor(output_img, cv2.COLOR_BGR2RGB), use_column_width=True)
+        else:
+            st.error(f"🔴 STATUS: REJECTED ({defects} DEFECT(S) DETECTED)")
+            st.image(cv2.cvtColor(output_img, cv2.COLOR_BGR2RGB), use_column_width=True)
