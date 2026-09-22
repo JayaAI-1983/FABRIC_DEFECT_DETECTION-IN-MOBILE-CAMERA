@@ -10,7 +10,7 @@ st.set_page_config(page_title="AI Industrial QC Inspector", layout="centered")
 st.title("🏭 Real-Time Fabric & Bag Defect Inspector")
 st.caption("SIFT Alignment + Multi-Defect Classifier (Stain, Density, Color Mismatch)")
 
-MASTER_FOLDER = r"D:\PRABHU_PROJECT\DATASET\MASTER"
+MASTER_FOLDER = "MASTER"
 
 @st.cache_resource
 def load_master_database(folder_path):
