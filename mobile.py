@@ -7,19 +7,21 @@ from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfigurati
 
 st.set_page_config(page_title="AI Industrial QC Inspector", layout="wide")
 
-# CSS Fix to make WebRTC video container 100% full width on mobile devices
+# CSS Fix: Mobile Screen-kku Camera View-a Full Width (Perisa) Aakkuvadharukku
 st.markdown(
     """
     <style>
     div[data-testid="stWebRtcStreamer"] {
         width: 100% !important;
+        display: flex;
+        justify-content: center;
     }
     div[data-testid="stWebRtcStreamer"] video {
         width: 100% !important;
         height: auto !important;
-        max-height: 500px !important;
-        object-fit: contain !important;
-        border-radius: 10px;
+        min-height: 380px !important;
+        object-fit: cover !important;
+        border-radius: 12px;
     }
     </style>
     """,
@@ -27,15 +29,14 @@ st.markdown(
 )
 
 st.title("🏭 Real-Time Fabric & Bag Defect Inspector")
-st.caption("SIFT Alignment + Multi-Defect Classifier (Stain, Density, Color Mismatch)")
+st.caption("SIFT Alignment + Multi-Defect Classifier")
 
-# Dynamic Master Folder path handling for both local and GitHub/Cloud deployment
+# GitHub / Cloud Deployment-kku Dynamic Master Folder Path Setup
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MASTER_FOLDER = os.path.join(BASE_DIR, "MASTER")
 
-# Fallback to local Windows directory if folder doesn't exist relative to script
 if not os.path.exists(MASTER_FOLDER):
-    MASTER_FOLDER = "MASTER"
+    os.makedirs(MASTER_FOLDER, exist_ok=True)
 
 @st.cache_resource
 def load_master_database(folder_path):
@@ -56,6 +57,10 @@ def load_master_database(folder_path):
     return master_dict
 
 master_dict = load_master_database(MASTER_FOLDER)
+
+# Master Images Illai Endral Warning Message
+if not master_dict:
+    st.warning("⚠️ GitHub Repo-la 'MASTER' nu oru folder create panni, adhukulla approved Master Fabric Images-a upload pannunga!")
 
 st.sidebar.header("⚙️ QC Inspection Settings")
 defect_sensitivity = st.sidebar.slider("Color Defect Sensitivity", 10, 100, 55)
@@ -88,50 +93,9 @@ def match_master_style(test_bgr, master_db):
 
     return best_master, best_score
 
-def classify_defect_type(master_roi, test_roi):
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-    
-    m_gray = cv2.cvtColor(master_roi, cv2.COLOR_BGR2GRAY)
-    t_gray = cv2.cvtColor(test_roi, cv2.COLOR_BGR2GRAY)
-
-    m_norm = clahe.apply(m_gray)
-    t_norm = clahe.apply(t_gray)
-
-    m_lab = cv2.cvtColor(master_roi, cv2.COLOR_BGR2LAB)
-    t_lab = cv2.cvtColor(test_roi, cv2.COLOR_BGR2LAB)
-
-    m_lightness = m_lab[:, :, 0].astype(float)
-    t_lightness = t_lab[:, :, 0].astype(float)
-
-    lightness_diff = np.mean(m_lightness) - np.mean(t_lightness)
-    overall_frame_darkness = np.mean(t_gray)
-
-    if lightness_diff > 35 and overall_frame_darkness > 40:
-        return "STAIN / OIL MARK"
-
-    color_dist = np.mean(np.abs(m_lab[:, :, 1:].astype(float) - t_lab[:, :, 1:].astype(float)))
-    if color_dist > 30:
-        return "THREAD COLOR MISMATCH"
-
-    m_edges = cv2.Canny(m_norm, 50, 150)
-    t_edges = cv2.Canny(t_norm, 50, 150)
-    
-    m_density = np.sum(m_edges > 0)
-    t_density = np.sum(t_edges > 0)
-
-    if t_density < (m_density * 0.45):
-        return "DENSITY TOO LOW"
-    elif t_density > (m_density * 1.9):
-        return "DENSITY TOO HIGH"
-
-    return "PATTERN DEFECT"
-
 def inspect_defects(master_bgr, test_bgr, sensitivity, min_area):
     h_m, w_m = master_bgr.shape[:2]
     test_resized = cv2.resize(test_bgr, (w_m, h_m))
-
-    gray_master = cv2.cvtColor(master_bgr, cv2.COLOR_BGR2GRAY)
-    gray_test = cv2.cvtColor(test_resized, cv2.COLOR_BGR2GRAY)
 
     master_lab = cv2.cvtColor(master_bgr, cv2.COLOR_BGR2LAB).astype(np.float32)
     test_lab = cv2.cvtColor(test_resized, cv2.COLOR_BGR2LAB).astype(np.float32)
@@ -141,17 +105,8 @@ def inspect_defects(master_bgr, test_bgr, sensitivity, min_area):
     color_diff = np.sqrt(da**2 + db**2)
     color_diff = np.clip(color_diff, 0, 255).astype(np.uint8)
 
-    edges = cv2.Canny(gray_master, 60, 180)
-    kernel_edge = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
-    edge_mask = cv2.dilate(edges, kernel_edge)
-    color_diff[edge_mask > 0] = 0
-
     blurred_diff = cv2.GaussianBlur(color_diff, (7, 7), 0)
     _, thresh = cv2.threshold(blurred_diff, sensitivity, 255, cv2.THRESH_BINARY)
-
-    kernel_clean = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
-    thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel_clean)
-    thresh = cv2.morphologyEx(thresh, cv2.MORPH_DILATE, kernel_clean)
 
     contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
@@ -162,17 +117,7 @@ def inspect_defects(master_bgr, test_bgr, sensitivity, min_area):
         area = cv2.contourArea(contour)
         if min_area <= area <= (w_m * h_m * 0.25):
             x, y, bw, bh = cv2.boundingRect(contour)
-            if x <= 10 or y <= 10 or (x + bw) >= (w_m - 10) or (y + bh) >= (h_m - 10):
-                continue
-
-            master_roi = master_bgr[y:y+bh, x:x+bw]
-            test_roi = test_resized[y:y+bh, x:x+bw]
-
-            defect_type = classify_defect_type(master_roi, test_roi)
-
             cv2.rectangle(output_img, (x, y), (x + bw, y + bh), (0, 0, 255), 3)
-            cv2.putText(output_img, f"DEFECT: {defect_type}", (x, max(y - 5, 15)),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
             defect_count += 1
 
     return output_img, defect_count
@@ -191,91 +136,57 @@ class LiveQCProcessor(VideoProcessorBase):
     def recv(self, frame):
         img_bgr = frame.to_ndarray(format="bgr24")
 
-        # Overlay text on live feed if no master images exist in DB
+        # Master Folder Khali-ya irundhal:
         if not self.master_db:
-            cv2.putText(img_bgr, "ERROR: NO MASTER IMAGES IN FOLDER", (20, 50),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+            cv2.putText(img_bgr, "NO MASTER IMAGE IN GITHUB REPO", (20, 50),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
             return frame.from_ndarray(img_bgr, format="bgr24")
 
         matched_master, match_score = match_master_style(img_bgr, self.master_db)
 
-        if matched_master is None or match_score < 18:
-            cv2.putText(img_bgr, "STATUS: UNKNOWN / UNREGISTERED STYLE", (20, 50),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+        if matched_master is None or match_score < 12:
+            cv2.putText(img_bgr, "STATUS: SEARCHING / UNKNOWN STYLE", (20, 50),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 165, 255), 2)
             return frame.from_ndarray(img_bgr, format="bgr24")
 
         processed_img, defects = inspect_defects(matched_master, img_bgr, self.sensitivity, self.min_area)
 
         if defects == 0:
             cv2.putText(processed_img, "STATUS: PASSED (NO DEFECT)", (20, 50),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
         else:
             cv2.putText(processed_img, f"STATUS: REJECTED ({defects} DEFECTS)", (20, 50),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
 
         return frame.from_ndarray(processed_img, format="bgr24")
 
-# Stream Selection Mode
-mode = st.radio("📸 Inspection Mode Select Pannunga:", ["Mobile Snap & Scan (Recommended)", "Live WebRTC Stream"])
+RTC_CONFIGURATION = RTCConfiguration(
+    {
+        "iceServers": [
+            {"urls": ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"]},
+            {
+                "urls": "turn:openrelay.metered.ca:80",
+                "username": "openrelay",
+                "credential": "openrelay",
+            }
+        ]
+    }
+)
 
-if mode == "Mobile Snap & Scan (Recommended)":
-    st.info("💡 High accuracy inspection-ukku photo click panni test pannunga.")
-    camera_file = st.camera_input("Take Photo for QC Inspection")
-
-    if camera_file is not None:
-        bytes_data = camera_file.getvalue()
-        cv_img = cv2.imdecode(np.frombuffer(bytes_data, np.uint8), cv2.IMREAD_COLOR)
-
-        if not master_dict:
-            st.error("❌ Master Database Empty! Please upload template images into the `MASTER` repository folder.")
-        else:
-            matched_master, score = match_master_style(cv_img, master_dict)
-
-            if matched_master is None or score < 18:
-                st.error("❌ STATUS: REJECTED (Unknown / Unregistered Style)")
-                st.image(cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB), use_column_width=True)
-            else:
-                processed_img, defects = inspect_defects(matched_master, cv_img, defect_sensitivity, min_defect_area)
-                st.image(cv2.cvtColor(processed_img, cv2.COLOR_BGR2RGB), use_column_width=True)
-                
-                if defects == 0:
-                    st.success("🟢 STATUS: PASSED (NO DEFECT FOUND)")
-                else:
-                    st.error(f"🔴 STATUS: REJECTED ({defects} DEFECTS FOUND)")
-
-else:
-    RTC_CONFIGURATION = RTCConfiguration(
-        {
-            "iceServers": [
-                {"urls": ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"]},
-                {
-                    "urls": "turn:openrelay.metered.ca:80",
-                    "username": "openrelay",
-                    "credential": "openrelay",
-                },
-                {
-                    "urls": "turn:openrelay.metered.ca:443",
-                    "username": "openrelay",
-                    "credential": "openrelay",
-                }
-            ]
-        }
-    )
-
-    ctx = webrtc_streamer(
-        key="industrial-qc-live",
-        video_processor_factory=LiveQCProcessor,
-        rtc_configuration=RTC_CONFIGURATION,
-        media_stream_constraints={
-            "video": {
-                "facingMode": "environment",
-                "width": {"ideal": 1280},
-                "height": {"ideal": 720}
-            },
-            "audio": False
+ctx = webrtc_streamer(
+    key="industrial-qc-live",
+    video_processor_factory=LiveQCProcessor,
+    rtc_configuration=RTC_CONFIGURATION,
+    media_stream_constraints={
+        "video": {
+            "facingMode": "environment",
+            "width": {"ideal": 1280},
+            "height": {"ideal": 720}
         },
-        async_processing=True
-    )
+        "audio": False
+    },
+    async_processing=True
+)
 
-    if ctx.video_processor:
-        ctx.video_processor.update_params(defect_sensitivity, min_defect_area, master_dict)
+if ctx.video_processor:
+    ctx.video_processor.update_params(defect_sensitivity, min_defect_area, master_dict)
