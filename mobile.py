@@ -10,6 +10,7 @@ st.set_page_config(page_title="AI Industrial QC Inspector", layout="centered")
 st.title("🏭 Real-Time Fabric & Bag Defect Inspector")
 st.caption("SIFT Alignment + Multi-Defect Classifier (Stain, Density, Color Mismatch)")
 
+# Path Configuration
 MASTER_FOLDER = "MASTER"
 
 @st.cache_resource
@@ -32,15 +33,13 @@ def load_master_database(folder_path):
 
 master_dict = load_master_database(MASTER_FOLDER)
 
-if not master_dict:
-    st.error(f"❌ Master images not found in `{MASTER_FOLDER}`. Please add approved template images.")
-    st.stop()
-
 st.sidebar.header("⚙️ QC Inspection Settings")
 defect_sensitivity = st.sidebar.slider("Color Defect Sensitivity", 10, 100, 55)
 min_defect_area = st.sidebar.slider("Min Defect Size (Pixels)", 30, 1500, 150)
 
-def match_master_style(test_bgr, master_dict):
+def match_master_style(test_bgr, master_db):
+    if not master_db:
+        return None, 0
     sift = cv2.SIFT_create(nfeatures=500)
     gray_test = cv2.cvtColor(test_bgr, cv2.COLOR_BGR2GRAY)
     kp_test, des_test = sift.detectAndCompute(gray_test, None)
@@ -52,7 +51,7 @@ def match_master_style(test_bgr, master_dict):
     best_score = 0
     best_master = None
 
-    for name, m_img in master_dict.items():
+    for name, m_img in master_db.items():
         gray_m = cv2.cvtColor(m_img, cv2.COLOR_BGR2GRAY)
         kp_m, des_m = sift.detectAndCompute(gray_m, None)
 
@@ -66,9 +65,6 @@ def match_master_style(test_bgr, master_dict):
     return best_master, best_score
 
 def classify_defect_type(master_roi, test_roi):
-    """
-    Adaptive Lighting Classifier - Dark spots vs Shadow Filter
-    """
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
     
     m_gray = cv2.cvtColor(master_roi, cv2.COLOR_BGR2GRAY)
@@ -77,7 +73,6 @@ def classify_defect_type(master_roi, test_roi):
     m_norm = clahe.apply(m_gray)
     t_norm = clahe.apply(t_gray)
 
-    # 1. LAB Lightness (L-Channel) Analysis
     m_lab = cv2.cvtColor(master_roi, cv2.COLOR_BGR2LAB)
     t_lab = cv2.cvtColor(test_roi, cv2.COLOR_BGR2LAB)
 
@@ -87,16 +82,13 @@ def classify_defect_type(master_roi, test_roi):
     lightness_diff = np.mean(m_lightness) - np.mean(t_lightness)
     overall_frame_darkness = np.mean(t_gray)
 
-    # Filter out normal low brightness/shadows
     if lightness_diff > 35 and overall_frame_darkness > 40:
         return "STAIN / OIL MARK"
 
-    # 2. Thread Color Mismatch
     color_dist = np.mean(np.abs(m_lab[:, :, 1:].astype(float) - t_lab[:, :, 1:].astype(float)))
     if color_dist > 30:
         return "THREAD COLOR MISMATCH"
 
-    # 3. Stitch / Embroidery Density Check
     m_edges = cv2.Canny(m_norm, 50, 150)
     t_edges = cv2.Canny(t_norm, 50, 150)
     
@@ -161,84 +153,97 @@ def inspect_defects(master_bgr, test_bgr, sensitivity, min_area):
 
     return output_img, defect_count
 
+# Class processing definition
 class LiveQCProcessor(VideoProcessorBase):
     def __init__(self):
         self.sensitivity = 55
         self.min_area = 150
+        self.master_db = master_dict
 
-    def update_params(self, sensitivity, min_area):
+    def update_params(self, sensitivity, min_area, db):
         self.sensitivity = sensitivity
         self.min_area = min_area
+        self.master_db = db
 
     def recv(self, frame):
         img_bgr = frame.to_ndarray(format="bgr24")
 
-        matched_master, match_score = match_master_style(img_bgr, master_dict)
+        matched_master, match_score = match_master_style(img_bgr, self.master_db)
 
         if matched_master is None or match_score < 18:
-            cv2.putText(img_bgr, "STATUS: REJECTED (Unknown / Unregistered Style)", (20, 40),
+            cv2.putText(img_bgr, "STATUS: UNKNOWN / UNREGISTERED STYLE", (20, 50),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
             return frame.from_ndarray(img_bgr, format="bgr24")
 
         processed_img, defects = inspect_defects(matched_master, img_bgr, self.sensitivity, self.min_area)
 
         if defects == 0:
-            cv2.putText(processed_img, "STATUS: PASSED (NO DEFECT)", (20, 40),
+            cv2.putText(processed_img, "STATUS: PASSED (NO DEFECT)", (20, 50),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
         else:
-            cv2.putText(processed_img, f"STATUS: REJECTED ({defects} DEFECTS FOUND)", (20, 40),
+            cv2.putText(processed_img, f"STATUS: REJECTED ({defects} DEFECTS)", (20, 50),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
 
         return frame.from_ndarray(processed_img, format="bgr24")
 
-# STUN and TURN server configuration for seamless mobile cellular network connections
-RTC_CONFIGURATION = RTCConfiguration(
-    {
-        "iceServers": [
-            {"urls": ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"]},
-            {"urls": ["stun:stun2.l.google.com:19302", "stun:stun3.l.google.com:19302"]},
-            {
-                "urls": "turn:openrelay.metered.ca:80",
-                "username": "openrelay",
-                "credential": "openrelay",
-            },
-            {
-                "urls": "turn:openrelay.metered.ca:443",
-                "username": "openrelay",
-                "credential": "openrelay",
-            },
-            {
-                "urls": "turn:openrelay.metered.ca:443?transport=tcp",
-                "username": "openrelay",
-                "credential": "openrelay",
-            },
-        ]
-    }
-)
+# Stream Mode Selection Menu
+mode = st.radio("📸 Inspection Mode Select Pannunga:", ["Mobile Snap & Scan (Recommended)", "Live WebRTC Stream"])
 
-# WebRTC Streamer Widget configured for Mobile Rear Camera and streaming limits
-ctx = webrtc_streamer(
-    key="industrial-qc-live",
-    video_processor_factory=LiveQCProcessor,
-    rtc_configuration=RTC_CONFIGURATION,
-    media_stream_constraints={
-        "video": {
-            "facingMode": "environment",  # Uses mobile rear camera automatically
-            "width": {"ideal": 640},
-            "height": {"ideal": 480}
-        },
-        "audio": False
-    },
-    async_processing=True
-)
+if mode == "Mobile Snap & Scan (Recommended)":
+    st.info("💡 Mobile-la High Quality inspection panna, direct camera photo click pannunga.")
+    camera_file = st.camera_input("Take Photo for QC Inspection")
 
-if ctx.video_processor:
-    ctx.video_processor.update_params(defect_sensitivity, min_defect_area)
+    if camera_file is not None:
+        bytes_data = camera_file.getvalue()
+        cv_img = cv2.imdecode(np.frombuffer(bytes_data, np.uint8), cv2.IMREAD_COLOR)
 
-# Live Status Indicator Under Camera Stream
-st.markdown("---")
-if ctx.state.playing:
-    st.success("🟢 **Camera Active:** Mobile rear camera is currently streaming and inspecting in real-time.")
-    st.info("ℹ️ Click the **'STOP'** button above to pause the camera stream.")
+        matched_master, score = match_master_style(cv_img, master_dict)
+
+        if matched_master is None or score < 18:
+            st.error("❌ STATUS: REJECTED (Unknown / Unregistered Style)")
+            st.image(cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB), use_column_width=True)
+        else:
+            processed_img, defects = inspect_defects(matched_master, cv_img, defect_sensitivity, min_defect_area)
+            st.image(cv2.cvtColor(processed_img, cv2.COLOR_BGR2RGB), use_column_width=True)
+            
+            if defects == 0:
+                st.success("🟢 STATUS: PASSED (NO DEFECT FOUND)")
+            else:
+                st.error(f"🔴 STATUS: REJECTED ({defects} DEFECTS FOUND)")
+
 else:
-    st.warning("🔴 **Camera Inactive:** Press the **'START'** button above and allow camera permissions to begin live inspection.")
+    RTC_CONFIGURATION = RTCConfiguration(
+        {
+            "iceServers": [
+                {"urls": ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"]},
+                {
+                    "urls": "turn:openrelay.metered.ca:80",
+                    "username": "openrelay",
+                    "credential": "openrelay",
+                },
+                {
+                    "urls": "turn:openrelay.metered.ca:443",
+                    "username": "openrelay",
+                    "credential": "openrelay",
+                }
+            ]
+        }
+    )
+
+    ctx = webrtc_streamer(
+        key="industrial-qc-live",
+        video_processor_factory=LiveQCProcessor,
+        rtc_configuration=RTC_CONFIGURATION,
+        media_stream_constraints={
+            "video": {
+                "facingMode": {"exact": "environment"} if st.checkbox("Force Back Camera", True) else "user",
+                "width": {"ideal": 1280},
+                "height": {"ideal": 720}
+            },
+            "audio": False
+        },
+        async_processing=True
+    )
+
+    if ctx.video_processor:
+        ctx.video_processor.update_params(defect_sensitivity, min_defect_area, master_dict)
